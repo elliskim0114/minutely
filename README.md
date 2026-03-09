@@ -47,3 +47,28 @@ want, the ai builds it, and you see it live in your browser.
 
 this project comes pre-loaded with everything you need to build a real app.
 you don't need to know what any of it is — the ai handles it all.
+
+## minutely mac release flow
+
+for each new mac version:
+
+1. run `npm run release:mac -- 0.1.1` (replace with your next version)
+2. run the printed git commands in terminal
+3. open the printed github release url
+4. upload the generated zip from `dist-desktop/`
+
+that gives you a clean public download page with version history + download counts.
+
+### notarized mac build (no "cannot verify malware" popup)
+
+before building, set these env vars in terminal:
+
+1. `export APPLE_ID="your-apple-id@email.com"`
+2. `export APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"`
+3. `export APPLE_TEAM_ID="YOURTEAMID"`
+
+then run:
+
+1. `npm run desktop:dist` (this now generates a notarized `.zip` when credentials are set)
+
+if those vars are set, notarization runs automatically after signing.

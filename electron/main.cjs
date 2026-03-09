@@ -4,10 +4,11 @@ const DEFAULT_WEB_URL = "https://minutelyplanner.vercel.app";
 
 function createWindow() {
   const win = new BrowserWindow({
-    width: 1320,
-    height: 860,
-    minWidth: 1100,
-    minHeight: 720,
+    width: 1280,
+    height: 720,
+    minWidth: 960,
+    minHeight: 640,
+    frame: false,
     title: "Minutely",
     webPreferences: {
       contextIsolation: true,
@@ -16,7 +17,13 @@ function createWindow() {
   });
 
   const appUrl = process.env.MINUTELY_WEB_URL || DEFAULT_WEB_URL;
+  win.setTitle("minutely");
   win.loadURL(appUrl);
+
+  win.on("page-title-updated", (event) => {
+    event.preventDefault();
+    win.setTitle("minutely");
+  });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);

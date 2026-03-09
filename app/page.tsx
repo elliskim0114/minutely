@@ -5,6 +5,10 @@ import {
   Card,
   CardBody,
   Checkbox,
+  Dropdown,
+  DropdownItem,
+  DropdownMenu,
+  DropdownTrigger,
   Input,
   Link,
   Modal,
@@ -25,12 +29,14 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
   type DragEvent as ReactDragEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { FaEnvelope, FaLinkedin } from "react-icons/fa";
 import { FaXTwitter } from "react-icons/fa6";
+import { FiMenu } from "react-icons/fi";
 import { SiSubstack } from "react-icons/si";
 import { hasSupabaseEnv, supabase } from "@/lib/supabase";
 
@@ -239,6 +245,8 @@ const BLOCKS_KEY = "minimal-planner-blocks";
 const VIEW_KEY = "minimal-planner-view";
 const FOCUS_KEY = "minimal-planner-focus";
 const QUEUE_KEY = "minimal-planner-queue";
+const MOBILE_DENSITY_KEY = "minimal-planner-mobile-density";
+const FIRST_TASK_HINT_KEY = "minutely-first-task-hint-shown";
 const MAX_UNDO_STEPS = 50;
 const CLOUD_TABLE = "planner_profiles";
 const QUOTES = [
@@ -248,6 +256,7 @@ const QUOTES = [
   "progress is the point.",
   "you showed up. that matters.",
 ];
+const CLOUD_REDIRECT_URL = "https://minutelyplanner.vercel.app";
 
 function toMinutes(time: string): number {
   const [h, m] = time.split(":").map(Number);
@@ -263,12 +272,25 @@ function minutesTo24h(total: number): string {
 }
 
 function formatMinutes(total: number, format: TimeFormat): string {
-  const hours24 = Math.floor(total / 60);
-  const mins = (total % 60).toString().padStart(2, "0");
+  const dayMinutes = 24 * 60;
+  const normalizedTotal = ((total % dayMinutes) + dayMinutes) % dayMinutes;
+  const hours24 = Math.floor(normalizedTotal / 60);
+  const mins = (normalizedTotal % 60).toString().padStart(2, "0");
   if (format === "24h") return `${hours24.toString().padStart(2, "0")}:${mins}`;
   const period = hours24 >= 12 ? "pm" : "am";
   const hours12 = hours24 % 12 === 0 ? 12 : hours24 % 12;
   return `${hours12}:${mins} ${period}`;
+}
+
+function getPlannerWindow(settings: PlannerSettings) {
+  const startMin = toMinutes(settings.startTime);
+  let endMin = toMinutes(settings.endTime);
+  if (endMin <= startMin) endMin += 24 * 60;
+  return {
+    startMin,
+    endMin,
+    wrapsOvernight: endMin > 24 * 60,
+  };
 }
 
 function coerceSettings(raw: string): PlannerSettings {
@@ -323,7 +345,8 @@ function readStoredBlocks(): PlanBlock[] {
 function readStoredView(): ViewMode {
   if (typeof window === "undefined") return "week";
   const raw = localStorage.getItem(VIEW_KEY);
-  return raw === "day" ? "day" : "week";
+  if (raw === "day" || raw === "week") return raw;
+  return window.matchMedia("(max-width: 640px)").matches ? "day" : "week";
 }
 
 function readStoredFocus(): Record<string, string> {
@@ -337,7 +360,10 @@ function readStoredQueue(): QueueTask[] {
   if (typeof window === "undefined") return [];
   const raw = localStorage.getItem(QUEUE_KEY);
   if (!raw) return [];
-  const parsed = JSON.parse(raw) as QueueTask[];
+  return sanitizeQueueTasks(JSON.parse(raw) as QueueTask[]);
+}
+
+function sanitizeQueueTasks(parsed: QueueTask[]): QueueTask[] {
   return parsed
     .filter((item) => typeof item?.task === "string" && item.task.trim().length > 0)
     .map((item) => ({
@@ -347,14 +373,26 @@ function readStoredQueue(): QueueTask[] {
     }));
 }
 
+function readMobileDensity(): "comfy" | "dense" {
+  if (typeof window === "undefined") return "comfy";
+  const raw = localStorage.getItem(MOBILE_DENSITY_KEY);
+  return raw === "dense" ? "dense" : "comfy";
+}
+
 function normalizeBlocks(blocks: PlanBlock[], settings: PlannerSettings): SlotBlock[] {
-  const startMin = toMinutes(settings.startTime);
-  const endMin = toMinutes(settings.endTime);
+  const { startMin, endMin, wrapsOvernight } = getPlannerWindow(settings);
 
   return blocks
     .map((block) => {
-      const snappedStart = Math.max(toMinutes(block.start), startMin);
-      const snappedEnd = Math.min(toMinutes(block.end), endMin);
+      let blockStart = toMinutes(block.start);
+      let blockEnd = toMinutes(block.end);
+      if (blockEnd <= blockStart) blockEnd += 24 * 60;
+      if (wrapsOvernight && blockStart < startMin) {
+        blockStart += 24 * 60;
+        blockEnd += 24 * 60;
+      }
+      const snappedStart = Math.max(blockStart, startMin);
+      const snappedEnd = Math.min(blockEnd, endMin);
       if (snappedEnd <= snappedStart) return null;
       const startSlot = Math.floor((snappedStart - startMin) / settings.interval);
       const endSlot = Math.max(startSlot + 1, Math.ceil((snappedEnd - startMin) / settings.interval));
@@ -412,6 +450,7 @@ export default function Home() {
   const [setupEndTime, setSetupEndTime] = useState(initialSettings?.endTime ?? DEFAULT_SETTINGS.endTime);
   const [setupWeekStart, setSetupWeekStart] = useState<WeekStartsOn>(initialSettings?.weekStartsOn ?? DEFAULT_SETTINGS.weekStartsOn);
   const [setupTheme, setSetupTheme] = useState<ThemeName>(initialSettings?.theme ?? DEFAULT_SETTINGS.theme);
+  const [setupValidationMessage, setSetupValidationMessage] = useState("");
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
@@ -428,10 +467,12 @@ export default function Home() {
   const [dropTarget, setDropTarget] = useState<EditingCell | null>(null);
   const [queueDraft, setQueueDraft] = useState("");
   const [isQueueOpen, setIsQueueOpen] = useState(false);
+  const [repeatMenu, setRepeatMenu] = useState<{ blockId: string; x: number; y: number } | null>(null);
   const [celebrationQuote, setCelebrationQuote] = useState<string | null>(null);
   const [daySummary, setDaySummary] = useState<{ day: number; lines: string[] } | null>(null);
   const [weekSummary, setWeekSummary] = useState<{ lines: string[] } | null>(null);
   const [showWelcomeLetter, setShowWelcomeLetter] = useState(false);
+  const [showFirstTaskLetter, setShowFirstTaskLetter] = useState(false);
   const [welcomeTyped, setWelcomeTyped] = useState("");
   const [setupTyped, setSetupTyped] = useState("");
   const [plannerTyped, setPlannerTyped] = useState("");
@@ -445,14 +486,31 @@ export default function Home() {
   const savedToastTimeoutRef = useRef<number | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const undoStackRef = useRef<UndoSnapshot[]>([]);
+  const firstTaskLetterShownRef = useRef(false);
   const [session, setSession] = useState<Session | null>(null);
   const [cloudReady, setCloudReady] = useState(false);
   const [cloudLoaded, setCloudLoaded] = useState(false);
   const [cloudStatus, setCloudStatus] = useState("");
+  const [isElectronShell, setIsElectronShell] = useState(false);
+  const [mobileDensity, setMobileDensity] = useState<"comfy" | "dense">(readMobileDensity);
+  const [isSyncEmailOpen, setIsSyncEmailOpen] = useState(false);
+  const [syncEmail, setSyncEmail] = useState("");
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (typeof navigator !== "undefined") {
+      setIsElectronShell(navigator.userAgent.toLowerCase().includes("electron"));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 640px)").matches) {
+      setViewMode("day");
+    }
   }, []);
 
   useEffect(() => {
@@ -480,6 +538,10 @@ export default function Home() {
     setLastSavedAt(new Date());
   }, [queueTasks]);
 
+  useEffect(() => {
+    localStorage.setItem(MOBILE_DENSITY_KEY, mobileDensity);
+  }, [mobileDensity]);
+
   useEffect(
     () => () => {
       if (quoteTimeoutRef.current) window.clearTimeout(quoteTimeoutRef.current);
@@ -487,6 +549,21 @@ export default function Home() {
     },
     [],
   );
+
+  useEffect(() => {
+    firstTaskLetterShownRef.current = localStorage.getItem(FIRST_TASK_HINT_KEY) === "1";
+  }, []);
+
+  useEffect(() => {
+    if (!repeatMenu) return;
+    const closeMenu = () => setRepeatMenu(null);
+    window.addEventListener("pointerdown", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    return () => {
+      window.removeEventListener("pointerdown", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+    };
+  }, [repeatMenu]);
 
   useEffect(() => {
     if (!showWelcomeLetter) {
@@ -573,7 +650,10 @@ export default function Home() {
     setBlocks(data.blocks);
     setViewMode(data.viewMode);
     setFocusByDate(data.focusByDate);
-    setQueueTasks(data.queueTasks ?? []);
+    setQueueTasks((prev) => {
+      if (!Array.isArray(data.queueTasks)) return prev;
+      return sanitizeQueueTasks(data.queueTasks);
+    });
     setReadyToPlan(true);
   }, []);
 
@@ -640,19 +720,43 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [cloudLoaded, session, cloudPayload]);
 
-  const signInToSync = async () => {
+  const submitSyncSignIn = async () => {
     if (!supabase) return;
     try {
-      const email = window.prompt("enter your email for cross-device sync:");
+      const email = syncEmail.trim();
       if (!email) return;
-      const { error } = await supabase.auth.signInWithOtp({
+      const primaryRedirect =
+        typeof window !== "undefined" && window.location.origin.startsWith("http")
+          ? window.location.origin
+          : CLOUD_REDIRECT_URL;
+
+      let { error } = await supabase.auth.signInWithOtp({
         email,
-        options: { emailRedirectTo: window.location.origin },
+        options: { emailRedirectTo: primaryRedirect },
       });
-      setCloudStatus(error ? "sign-in failed (check supabase url/key)" : "check your email for sign-in link");
-    } catch {
-      setCloudStatus("sign-in failed (network or supabase url issue)");
+
+      if (error && primaryRedirect !== CLOUD_REDIRECT_URL) {
+        const retry = await supabase.auth.signInWithOtp({
+          email,
+          options: { emailRedirectTo: CLOUD_REDIRECT_URL },
+        });
+        error = retry.error;
+      }
+
+      if (error) {
+        setCloudStatus(`sign-in failed: ${error.message}`);
+        return;
+      }
+      setCloudStatus("check your email for sign-in link");
+      setIsSyncEmailOpen(false);
+      setSyncEmail("");
+    } catch (error) {
+      setCloudStatus(`sign-in failed: ${error instanceof Error ? error.message : "unknown error"}`);
     }
+  };
+
+  const signInToSync = () => {
+    setIsSyncEmailOpen(true);
   };
 
   const signOutFromSync = async () => {
@@ -662,10 +766,13 @@ export default function Home() {
   };
 
   const activeDay = cursorDate.getDay();
+  const plannerWindow = useMemo(() => {
+    if (!settings) return { startMin: 0, endMin: 0, wrapsOvernight: false };
+    return getPlannerWindow(settings);
+  }, [settings]);
   const slotLabels = useMemo(() => {
     if (!settings) return [];
-    const startMin = toMinutes(settings.startTime);
-    const endMin = toMinutes(settings.endTime);
+    const { startMin, endMin } = plannerWindow;
     const labels: { start24: string; end24: string; label: string }[] = [];
 
     for (let t = startMin; t < endMin; t += settings.interval) {
@@ -678,7 +785,7 @@ export default function Home() {
     }
 
     return labels;
-  }, [settings]);
+  }, [settings, plannerWindow]);
 
   const normalized = useMemo(() => {
     if (!settings) return [];
@@ -740,6 +847,7 @@ export default function Home() {
   const isCurrentWindow = visibleDateKeys.includes(todayKey);
 
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const adjustedCurrentMinutes = plannerWindow.wrapsOvernight && currentMinutes < plannerWindow.startMin ? currentMinutes + 24 * 60 : currentMinutes;
 
   const currentPeriodLabel =
     viewMode === "week"
@@ -750,9 +858,9 @@ export default function Home() {
     return slotLabels.findIndex((slot) => {
       const slotStartMin = toMinutes(slot.start24);
       const slotEndMin = toMinutes(slot.end24);
-      return currentMinutes >= slotStartMin && currentMinutes < slotEndMin;
+      return adjustedCurrentMinutes >= slotStartMin && adjustedCurrentMinutes < slotEndMin;
     });
-  }, [slotLabels, currentMinutes]);
+  }, [slotLabels, adjustedCurrentMinutes]);
 
   const currentSlotLabel = currentSlotIndex >= 0 ? slotLabels[currentSlotIndex]?.label ?? "outside planning hours" : "outside planning hours";
   const visibleBlockCount = useMemo(() => {
@@ -806,9 +914,6 @@ export default function Home() {
 
   const applySetup = (openPlanner: boolean) => {
     const parsedInterval = Number(setupInterval);
-    const startMin = toMinutes(setupStartTime);
-    const endMin = toMinutes(setupEndTime);
-    if (endMin <= startMin) return;
 
     const nextSettings: PlannerSettings = {
       timeFormat: setupTimeFormat,
@@ -818,6 +923,8 @@ export default function Home() {
       weekStartsOn: setupWeekStart,
       theme: setupTheme,
     };
+    const { startMin, endMin } = getPlannerWindow(nextSettings);
+    setSetupValidationMessage("");
 
     setSettings(nextSettings);
     setInlineSpan("1");
@@ -849,13 +956,25 @@ export default function Home() {
     undoStackRef.current = nextStack;
   }, [blocks, queueTasks]);
 
+  const showFirstTaskEnvelope = () => {
+    if (firstTaskLetterShownRef.current) return;
+    firstTaskLetterShownRef.current = true;
+    localStorage.setItem(FIRST_TASK_HINT_KEY, "1");
+    setShowFirstTaskLetter(true);
+  };
+
+  const closeFirstTaskEnvelope = () => {
+    setShowFirstTaskLetter(false);
+  };
+
   const addInlineBlock = () => {
     if (!settings || !editingCell || inlineTask.trim() === "") return;
+    const isFirstTask = blocks.length === 0;
 
     const maxSlots = getMaxFreeSlots(editingCell.day, editingCell.slot);
     const chosenSlots = Math.min(Number(inlineSpan) || 1, maxSlots);
-    const startMinutes = toMinutes(settings.startTime) + editingCell.slot * settings.interval;
-    const endMinutes = Math.min(startMinutes + chosenSlots * settings.interval, toMinutes(settings.endTime));
+    const startMinutes = plannerWindow.startMin + editingCell.slot * settings.interval;
+    const endMinutes = Math.min(startMinutes + chosenSlots * settings.interval, plannerWindow.endMin);
 
     const next: PlanBlock = {
       id: crypto.randomUUID(),
@@ -868,6 +987,7 @@ export default function Home() {
 
     pushUndoSnapshot();
     setBlocks((prev) => [...prev, next]);
+    if (isFirstTask) showFirstTaskEnvelope();
     setInlineTask("");
     setInlineSpan("1");
     setEditingCell(null);
@@ -1068,6 +1188,37 @@ export default function Home() {
     setInlineEditingTaskName("");
   };
 
+  const repeatBlock = (blockId: string, offsetDays: number) => {
+    if (!settings) return;
+    const source = normalized.find((item) => item.id === blockId);
+    if (!source) return;
+    const sourceDate = keyToDate(source.dateKey);
+    const targetDate = new Date(sourceDate);
+    targetDate.setDate(sourceDate.getDate() + offsetDays);
+    const targetDateKey = dateToKey(targetDate);
+
+    const targetDayBlocks = (blocksByDate.get(targetDateKey) ?? []).filter((item) => item.id !== blockId);
+    const hasCollision = targetDayBlocks.some((item) => source.startSlot < item.endSlot && source.endSlot > item.startSlot);
+    if (hasCollision) {
+      window.alert("that time is already occupied on the target day.");
+      return;
+    }
+
+    const startMinutes = plannerWindow.startMin + source.startSlot * settings.interval;
+    const endMinutes = plannerWindow.startMin + source.endSlot * settings.interval;
+    const next: PlanBlock = {
+      id: crypto.randomUUID(),
+      dateKey: targetDateKey,
+      task: source.task,
+      start: minutesTo24h(startMinutes),
+      end: minutesTo24h(endMinutes),
+      done: false,
+    };
+
+    pushUndoSnapshot();
+    setBlocks((prev) => [...prev, next]);
+  };
+
   const moveBlockToSlot = (blockId: string, day: number, slotIndex: number) => {
     if (!settings) return;
     const block = normalized.find((item) => item.id === blockId);
@@ -1076,8 +1227,8 @@ export default function Home() {
     const maxSlots = getMaxFreeSlotsForMove(day, slotIndex, blockId);
     if (maxSlots < 1) return;
     const span = Math.min(currentSpan, maxSlots);
-    const startMinutes = toMinutes(settings.startTime) + slotIndex * settings.interval;
-    const endMinutes = Math.min(startMinutes + span * settings.interval, toMinutes(settings.endTime));
+    const startMinutes = plannerWindow.startMin + slotIndex * settings.interval;
+    const endMinutes = Math.min(startMinutes + span * settings.interval, plannerWindow.endMin);
     const targetDate = dayDates.get(day) ?? cursorDate;
     const nextDateKey = dateToKey(targetDate);
     const nextStart = minutesTo24h(startMinutes);
@@ -1101,13 +1252,14 @@ export default function Home() {
 
   const scheduleQueueTask = (queueTaskId: string, day: number, slotIndex: number) => {
     if (!settings) return;
+    const isFirstTask = blocks.length === 0;
     const queueTask = queueTasks.find((item) => item.id === queueTaskId);
     if (!queueTask) return;
     const maxSlots = getMaxFreeSlots(day, slotIndex);
     if (maxSlots < 1) return;
     const span = Math.min(queueTask.span, maxSlots);
-    const startMinutes = toMinutes(settings.startTime) + slotIndex * settings.interval;
-    const endMinutes = Math.min(startMinutes + span * settings.interval, toMinutes(settings.endTime));
+    const startMinutes = plannerWindow.startMin + slotIndex * settings.interval;
+    const endMinutes = Math.min(startMinutes + span * settings.interval, plannerWindow.endMin);
     const targetDate = dayDates.get(day) ?? cursorDate;
 
     const next: PlanBlock = {
@@ -1121,6 +1273,7 @@ export default function Home() {
 
     pushUndoSnapshot();
     setBlocks((prev) => [...prev, next]);
+    if (isFirstTask) showFirstTaskEnvelope();
     setQueueTasks((prev) => prev.filter((item) => item.id !== queueTaskId));
   };
 
@@ -1222,7 +1375,7 @@ export default function Home() {
             ? {
                 ...item,
                 end: minutesTo24h(
-                  Math.min(toMinutes(settings.endTime), toMinutes(item.start) + Math.max(1, nextSpan) * settings.interval),
+                  Math.min(plannerWindow.endMin, toMinutes(item.start) + Math.max(1, nextSpan) * settings.interval),
                 ),
               }
             : item,
@@ -1251,10 +1404,12 @@ export default function Home() {
     localStorage.removeItem(VIEW_KEY);
     localStorage.removeItem(SETTINGS_KEY);
     localStorage.removeItem(QUEUE_KEY);
+    localStorage.removeItem(MOBILE_DENSITY_KEY);
     setBlocks([]);
     setFocusByDate({});
     setQueueTasks([]);
     setViewMode("week");
+    setMobileDensity("comfy");
     setCursorDate(new Date());
     setPeriodInputDate(dateToKey(new Date()));
     setSettings(null);
@@ -1264,6 +1419,7 @@ export default function Home() {
     setSetupEndTime(DEFAULT_SETTINGS.endTime);
     setSetupWeekStart(DEFAULT_SETTINGS.weekStartsOn);
     setSetupTheme(DEFAULT_SETTINGS.theme);
+    setSetupValidationMessage("");
     setReadyToPlan(false);
     setShowWelcomeLetter(false);
     setIsSettingsOpen(false);
@@ -1278,6 +1434,12 @@ export default function Home() {
   const activeTheme = !readyToPlan ? setupTheme : (settings?.theme ?? "beige");
   const themeClasses = THEME_CLASSES[activeTheme];
   const tones = THEME_TONES[activeTheme];
+  const centeredBtn = "!justify-center text-center [&>span]:w-full [&>span]:text-center";
+  const denseMobile = mobileDensity === "dense";
+  const mobileTimeCol = denseMobile ? "w-[84px]" : "w-[92px]";
+  const mobileTimeText = denseMobile ? "text-[10px]" : "text-[11px]";
+  const mobileCellMinW = denseMobile ? "min-w-40" : "min-w-44";
+  const mobileCellPad = denseMobile ? "px-1.5 py-1.5" : "px-2 py-2";
   const setupSelectClassNames =
     activeTheme === "black"
       ? {
@@ -1360,8 +1522,28 @@ export default function Home() {
                   ))}
                 </Select>
 
-                <Input type="time" label="day starts" labelPlacement="outside" value={setupStartTime} onValueChange={setSetupStartTime} classNames={setupInputClassNames} />
-                <Input type="time" label="day ends" labelPlacement="outside" value={setupEndTime} onValueChange={setSetupEndTime} classNames={setupInputClassNames} />
+                <Input
+                  type="time"
+                  label="day starts"
+                  labelPlacement="outside"
+                  value={setupStartTime}
+                  onValueChange={(value) => {
+                    setSetupStartTime(value);
+                    if (setupValidationMessage) setSetupValidationMessage("");
+                  }}
+                  classNames={setupInputClassNames}
+                />
+                <Input
+                  type="time"
+                  label="day ends"
+                  labelPlacement="outside"
+                  value={setupEndTime}
+                  onValueChange={(value) => {
+                    setSetupEndTime(value);
+                    if (setupValidationMessage) setSetupValidationMessage("");
+                  }}
+                  classNames={setupInputClassNames}
+                />
 
                 <Select
                   label="week starts on"
@@ -1393,6 +1575,8 @@ export default function Home() {
 
                 </motion.div>
 
+                {setupValidationMessage ? <p className="text-sm text-red-500">{setupValidationMessage}</p> : null}
+
                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.45, delay: 0.2 }}>
                   <Button radius="sm" size="lg" onPress={() => applySetup(true)} className={`h-12 text-base font-semibold ${tones.accentBtn}`}>
                     start planning
@@ -1417,7 +1601,18 @@ export default function Home() {
   }
 
   return (
-    <main className={`min-h-screen ${themeClasses.page} px-3 py-4 font-[family-name:var(--font-manrope)] sm:px-5 sm:py-6 ${activeTheme === "black" ? "text-zinc-100" : "text-[#252525]"}`}>
+    <main
+      className={`min-h-screen ${themeClasses.page} px-3 font-[family-name:var(--font-manrope)] ${
+        isElectronShell ? "pb-4 pt-10 sm:pb-6 sm:pt-10" : "py-4 sm:py-6"
+      } sm:px-5 ${activeTheme === "black" ? "text-zinc-100" : "text-[#252525]"}`}
+    >
+      {isElectronShell ? (
+        <div
+          aria-hidden="true"
+          className="fixed inset-x-0 top-0 z-[120] h-8"
+          style={{ WebkitAppRegion: "drag" } as CSSProperties}
+        />
+      ) : null}
       <AnimatePresence>
         {showSavedToast ? (
           <motion.div
@@ -1466,6 +1661,60 @@ export default function Home() {
               <p className="mt-4 text-sm text-zinc-500">click anywhere to close</p>
             </div>
           </motion.div>
+        ) : null}
+        {showFirstTaskLetter ? (
+          <motion.div
+            key="first-task-letter"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[109] flex items-center justify-center bg-white/95 px-4"
+            onClick={closeFirstTaskEnvelope}
+          >
+            <div className="max-w-2xl rounded-2xl border border-zinc-300 bg-white p-7 text-center shadow-md">
+              <p className="text-2xl">✉️</p>
+              <h2 className="mt-2 font-[family-name:var(--font-instrument-serif)] text-4xl text-zinc-900">first task complete!</h2>
+              <p className="mt-4 whitespace-pre-line text-base text-zinc-700">
+                you&apos;re building real momentum.
+                {"\n\n"}use &quot;jump to now&quot; to get to your current time.
+                {"\n"}click the bottom-right star to save tasks in queue.
+                {"\n"}right-click any task to repeat it.
+              </p>
+              <p className="mt-4 text-sm text-zinc-500">click anywhere to close</p>
+            </div>
+          </motion.div>
+        ) : null}
+        {repeatMenu ? (
+          <div
+            className={`fixed z-[130] min-w-[180px] rounded-md border shadow-lg ${tones.border} ${themeClasses.panel}`}
+            style={{
+              left: repeatMenu.x,
+              top: repeatMenu.y,
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <div className={`border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide ${tones.borderSoft} ${tones.textSubtle}`}>repeat</div>
+            <button
+              type="button"
+              className={`block w-full px-3 py-2 text-left text-sm ${tones.textStrong}`}
+              onClick={() => {
+                repeatBlock(repeatMenu.blockId, 1);
+                setRepeatMenu(null);
+              }}
+            >
+              daily (+1 day)
+            </button>
+            <button
+              type="button"
+              className={`block w-full px-3 py-2 text-left text-sm ${tones.textStrong}`}
+              onClick={() => {
+                repeatBlock(repeatMenu.blockId, 7);
+                setRepeatMenu(null);
+              }}
+            >
+              weekly (+7 days)
+            </button>
+          </div>
         ) : null}
         {celebrationQuote ? (
           <motion.div
@@ -1606,38 +1855,176 @@ export default function Home() {
       </AnimatePresence>
 
       <div className="mx-auto max-w-[1600px] space-y-4">
-        <header className={`sticky top-2 z-40 rounded-xl border ${tones.border} ${themeClasses.panel} p-4 shadow-sm backdrop-blur sm:p-5`}>
-          <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-[1fr_auto] sm:gap-x-6">
-            <h1 className="font-[family-name:var(--font-instrument-serif)] text-4xl leading-none sm:text-5xl">
+        <header className={`sticky top-2 z-40 rounded-xl border ${tones.border} ${themeClasses.panel} p-3 shadow-sm backdrop-blur sm:p-5`}>
+          <div className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-2 sm:gap-x-6">
+            <h1 className="font-[family-name:var(--font-instrument-serif)] text-xl leading-none sm:text-5xl">
               {plannerTyped}
               <span className={`ml-0.5 inline-block ${plannerTyped.length < "minutely".length ? "animate-pulse" : ""}`}>|</span>
             </h1>
-            <div className={`text-left font-mono text-3xl leading-none tabular-nums sm:mt-2 sm:text-right sm:text-4xl ${tones.textStrong}`}>{topClock}</div>
+            <div className={`text-right font-mono text-xl leading-none tabular-nums sm:mt-2 sm:text-4xl ${tones.textStrong}`}>{topClock}</div>
             <motion.p
               initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.45, delay: 0.18 }}
-              className={`text-base sm:text-lg ${tones.textMuted}`}
+              className={`text-xs sm:text-lg ${tones.textMuted}`}
             >
               clean blocks. zero noise. every minute.
             </motion.p>
             <button
               type="button"
-              className={`text-left text-base sm:text-right sm:text-lg ${tones.textMuted}`}
+              className={`truncate text-right text-xs sm:text-lg ${tones.textMuted}`}
               onClick={jumpToNow}
             >
               current slot: {currentSlotLabel}
             </button>
           </div>
 
-          <div className={`mt-4 rounded-lg border ${tones.borderSoft} ${themeClasses.soft} px-3 py-3 sm:px-4`}>
-            <div className="flex items-center gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className={`mt-3 rounded-lg border ${tones.borderSoft} ${themeClasses.soft} px-2.5 py-2.5 sm:px-4 sm:py-3`}>
+            <div className="flex items-start gap-2 sm:hidden">
               <div className={`flex overflow-hidden rounded-md border ${tones.border} ${tones.baseSurface}`}>
                 <Button
                   size="md"
                   radius="none"
                   variant="light"
-                  className={`h-9 min-w-20 border-r text-sm font-medium sm:h-10 sm:min-w-24 sm:text-base ${tones.border} ${tones.textStrong} ${
+                  className={`h-9 min-w-20 border-r text-sm font-medium ${tones.border} ${tones.textStrong} ${centeredBtn} ${
+                    viewMode === "day" ? tones.softHeader : ""
+                  }`}
+                  onPress={() => setViewMode("day")}
+                >
+                  day
+                </Button>
+                <Button
+                  size="md"
+                  radius="none"
+                  variant="light"
+                  className={`h-9 min-w-20 text-sm font-medium ${tones.textStrong} ${centeredBtn} ${
+                    viewMode === "week" ? tones.softHeader : ""
+                  }`}
+                  onPress={() => setViewMode("week")}
+                >
+                  week
+                </Button>
+              </div>
+
+              <div className={`flex min-w-0 flex-1 overflow-hidden rounded-md border ${tones.border} ${tones.baseSurface}`}>
+                <div className="flex h-9 min-w-0 flex-1 items-center justify-center px-1">
+                  {isPeriodEditing ? (
+                    <Input
+                      type="date"
+                      aria-label="jump to date"
+                      value={periodInputDate}
+                      onValueChange={handlePeriodInputChange}
+                      autoFocus
+                      className="w-full"
+                      classNames={{
+                        inputWrapper: `h-8 min-h-8 border-none bg-transparent shadow-none ${activeTheme === "black" ? "[color-scheme:dark]" : ""}`,
+                        input: `text-center text-xs ${activeTheme === "black" ? "!text-zinc-100" : tones.textMuted}`,
+                      }}
+                      onBlur={applyPeriodInputJump}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          applyPeriodInputJump();
+                        }
+                        if (event.key === "Escape") {
+                          setPeriodInputDate(dateToKey(cursorDate));
+                          setIsPeriodEditing(false);
+                        }
+                      }}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className={`h-full w-full truncate text-center text-xs ${tones.textMuted}`}
+                      onClick={() => setIsPeriodEditing(true)}
+                    >
+                      {currentPeriodLabel}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <Dropdown>
+                <DropdownTrigger>
+                  <Button
+                    size="md"
+                    variant="light"
+                    className={`h-9 min-w-9 rounded-md border px-2 ${tones.border} ${tones.baseSurface} ${tones.textStrong} ${centeredBtn}`}
+                    isIconOnly
+                    aria-label="open planner actions"
+                  >
+                    <FiMenu className="text-lg" />
+                  </Button>
+                </DropdownTrigger>
+                <DropdownMenu
+                  aria-label="planner mobile menu"
+                  className={`min-w-[220px] ${activeTheme === "black" ? "text-zinc-100" : ""}`}
+                  itemClasses={{
+                    base: `data-[hover=true]:${tones.softHeader}`,
+                  }}
+                >
+                  <DropdownItem
+                    key="prev-period"
+                    onPress={() =>
+                      setCursorDate((prev) => {
+                        const next = new Date(prev);
+                        next.setDate(prev.getDate() - (viewMode === "week" ? 7 : 1));
+                        return next;
+                      })
+                    }
+                  >
+                    prev
+                  </DropdownItem>
+                  <DropdownItem
+                    key="next-period"
+                    onPress={() =>
+                      setCursorDate((prev) => {
+                        const next = new Date(prev);
+                        next.setDate(prev.getDate() + (viewMode === "week" ? 7 : 1));
+                        return next;
+                      })
+                    }
+                  >
+                    next
+                  </DropdownItem>
+                  <DropdownItem key="jump" onPress={jumpToNow}>
+                    jump to now
+                  </DropdownItem>
+                  <DropdownItem key="recap" onPress={openWeekSummary}>
+                    weekly recap
+                  </DropdownItem>
+                  <DropdownItem key="export" onPress={exportPlannerAsPdf} isDisabled={isExporting}>
+                    export pdf
+                  </DropdownItem>
+                  {hasSupabaseEnv ? (
+                    session?.user ? (
+                      <DropdownItem key="sync-out" onPress={signOutFromSync}>
+                        sign out
+                      </DropdownItem>
+                    ) : (
+                      <DropdownItem key="sync-in" onPress={signInToSync}>
+                        sync sign in
+                      </DropdownItem>
+                    )
+                  ) : (
+                    <DropdownItem key="sync-missing" onPress={() => setCloudStatus("sync unavailable: missing supabase env vars")}>
+                      sync unavailable
+                    </DropdownItem>
+                  )}
+                  <DropdownItem key="settings" onPress={() => setIsSettingsOpen(true)}>
+                    settings
+                  </DropdownItem>
+                </DropdownMenu>
+              </Dropdown>
+            </div>
+
+            <div className="hidden items-center gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:flex">
+              <div className={`flex overflow-hidden rounded-md border ${tones.border} ${tones.baseSurface}`}>
+                <Button
+                  size="md"
+                  radius="none"
+                  variant="light"
+                  className={`h-9 min-w-20 border-r text-sm font-medium sm:h-10 sm:min-w-24 sm:text-base ${tones.border} ${tones.textStrong} ${centeredBtn} ${
                     viewMode === "day" ? tones.softHeader : ""
                   }`}
                   onPress={() => setViewMode("day")}
@@ -1648,7 +2035,7 @@ export default function Home() {
                   size="md"
                   radius="none"
                   variant="light"
-                  className={`h-9 min-w-20 text-sm font-medium sm:h-10 sm:min-w-24 sm:text-base ${tones.textStrong} ${
+                  className={`h-9 min-w-20 text-sm font-medium sm:h-10 sm:min-w-24 sm:text-base ${tones.textStrong} ${centeredBtn} ${
                     viewMode === "week" ? tones.softHeader : ""
                   }`}
                   onPress={() => setViewMode("week")}
@@ -1661,7 +2048,7 @@ export default function Home() {
                   size="md"
                   radius="none"
                   variant="light"
-                  className={`h-9 min-w-20 border-r text-sm font-medium sm:h-10 sm:min-w-24 sm:text-base ${tones.border} ${tones.textStrong}`}
+                  className={`h-9 min-w-20 border-r text-sm font-medium sm:h-10 sm:min-w-24 sm:text-base ${tones.border} ${tones.textStrong} ${centeredBtn}`}
                   onPress={() =>
                     setCursorDate((prev) => {
                       const next = new Date(prev);
@@ -1711,7 +2098,7 @@ export default function Home() {
                   size="md"
                   radius="none"
                   variant="light"
-                  className={`h-9 min-w-20 border-l text-sm font-medium sm:h-10 sm:min-w-24 sm:text-base ${tones.border} ${tones.textStrong}`}
+                  className={`h-9 min-w-20 border-l text-sm font-medium sm:h-10 sm:min-w-24 sm:text-base ${tones.border} ${tones.textStrong} ${centeredBtn}`}
                   onPress={() =>
                     setCursorDate((prev) => {
                       const next = new Date(prev);
@@ -1728,7 +2115,7 @@ export default function Home() {
                   size="md"
                   radius="none"
                   variant="light"
-                  className={`h-9 min-w-24 text-sm font-medium sm:h-10 sm:min-w-28 sm:text-base ${tones.textStrong}`}
+                  className={`h-9 min-w-24 text-sm font-medium sm:h-10 sm:min-w-28 sm:text-base ${tones.textStrong} ${centeredBtn}`}
                   onPress={jumpToNow}
                 >
                   jump to now
@@ -1739,7 +2126,7 @@ export default function Home() {
                   size="md"
                   radius="none"
                   variant="light"
-                  className={`h-9 min-w-32 text-sm font-medium sm:h-10 sm:min-w-36 sm:text-base ${tones.textStrong}`}
+                  className={`h-9 min-w-32 text-sm font-medium sm:h-10 sm:min-w-36 sm:text-base ${tones.textStrong} ${centeredBtn}`}
                   onPress={openWeekSummary}
                 >
                   weekly recap
@@ -1750,21 +2137,21 @@ export default function Home() {
                   size="md"
                   radius="none"
                   variant="light"
-                  className={`h-9 min-w-24 text-sm font-medium sm:h-10 sm:min-w-28 sm:text-base ${tones.textStrong}`}
+                  className={`h-9 min-w-24 text-sm font-medium sm:h-10 sm:min-w-28 sm:text-base ${tones.textStrong} ${centeredBtn}`}
                   onPress={exportPlannerAsPdf}
                   isDisabled={isExporting}
                 >
                   export pdf
                 </Button>
               </div>
-              {hasSupabaseEnv ? (
-                <div className={`flex overflow-hidden rounded-md border ${tones.border} ${tones.baseSurface}`}>
-                  {session?.user ? (
+              <div className={`flex overflow-hidden rounded-md border ${tones.border} ${tones.baseSurface}`}>
+                {hasSupabaseEnv ? (
+                  session?.user ? (
                     <Button
                       size="md"
                       radius="none"
                       variant="light"
-                      className={`h-9 min-w-24 text-sm font-medium sm:h-10 sm:min-w-28 sm:text-base ${tones.textStrong}`}
+                      className={`h-9 min-w-24 text-sm font-medium sm:h-10 sm:min-w-28 sm:text-base ${tones.textStrong} ${centeredBtn}`}
                       onPress={signOutFromSync}
                     >
                       sign out
@@ -1774,20 +2161,30 @@ export default function Home() {
                       size="md"
                       radius="none"
                       variant="light"
-                      className={`h-9 min-w-24 text-sm font-medium sm:h-10 sm:min-w-28 sm:text-base ${tones.textStrong}`}
+                      className={`h-9 min-w-24 text-sm font-medium sm:h-10 sm:min-w-28 sm:text-base ${tones.textStrong} ${centeredBtn}`}
                       onPress={signInToSync}
                     >
                       sync sign in
                     </Button>
-                  )}
-                </div>
-              ) : null}
+                  )
+                ) : (
+                  <Button
+                    size="md"
+                    radius="none"
+                    variant="light"
+                    className={`h-9 min-w-24 text-sm font-medium sm:h-10 sm:min-w-28 sm:text-base ${tones.textStrong} ${centeredBtn}`}
+                    onPress={() => setCloudStatus("sync unavailable: missing supabase env vars")}
+                  >
+                    sync unavailable
+                  </Button>
+                )}
+              </div>
               <div className={`flex overflow-hidden rounded-md border ${tones.border} ${tones.baseSurface} sm:ml-auto`}>
                 <Button
                   size="md"
                   radius="none"
                   variant="light"
-                  className={`h-9 min-w-24 text-sm font-medium sm:h-10 sm:min-w-28 sm:text-base ${tones.textStrong}`}
+                  className={`h-9 min-w-24 text-sm font-medium sm:h-10 sm:min-w-28 sm:text-base ${tones.textStrong} ${centeredBtn}`}
                   onPress={() => setIsSettingsOpen(true)}
                 >
                   settings
@@ -1795,25 +2192,30 @@ export default function Home() {
               </div>
             </div>
             {hasSupabaseEnv ? (
-              <p className={`mt-2 text-xs ${tones.textSubtle}`}>
+              <p className={`mt-2 hidden text-xs sm:block ${tones.textSubtle}`}>
                 cloud sync: {session?.user?.email ?? "not signed in"}
                 {cloudStatus ? ` • ${cloudStatus}` : ""}
                 {` • ${savedLabel}`}
               </p>
             ) : (
-              <p className={`mt-2 text-xs ${tones.textSubtle}`}>add supabase keys to enable cross-device sync. • {savedLabel}</p>
+              <p className={`mt-2 hidden text-xs sm:block ${tones.textSubtle}`}>add supabase keys to enable cross-device sync. • {savedLabel}</p>
             )}
+            <p className={`mt-1 text-[11px] sm:hidden ${tones.textSubtle}`}>
+              {savedLabel} • use menu for settings
+            </p>
             {visibleBlockCount === 0 ? (
-              <p className={`mt-2 text-sm ${tones.textSubtle}`}>no tasks yet. tap any empty cell to add your first block.</p>
+              <p className={`mt-2 hidden text-sm sm:block ${tones.textSubtle}`}>no tasks yet. tap any empty cell to add your first block.</p>
             ) : null}
           </div>
         </header>
 
         <section ref={plannerSectionRef} className={`overflow-auto rounded-xl border ${tones.border} ${themeClasses.panel}`}>
-          <table ref={plannerTableRef} className="w-full min-w-[980px] border-separate border-spacing-0">
+          <table ref={plannerTableRef} className="w-full min-w-[420px] border-separate border-spacing-0 sm:min-w-[980px]">
             <thead>
               <tr className={tones.softHeader}>
-                <th className={`sticky left-0 z-20 border-b border-r px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide sm:text-sm ${tones.border} ${tones.softHeader} ${tones.textMuted}`}>
+                <th
+                  className={`sticky left-0 z-20 ${mobileTimeCol} border-b border-r px-2 py-2 text-left text-[11px] font-semibold uppercase tracking-wide sm:w-60 sm:px-4 sm:py-3 sm:text-sm ${tones.border} ${tones.softHeader} ${tones.textMuted}`}
+                >
                   time
                 </th>
                 {visibleDays.map((dayIndex) => {
@@ -1872,14 +2274,16 @@ export default function Home() {
               {slotLabels.map((slot, slotIndex) => {
                 const slotStartMin = toMinutes(slot.start24);
                 const slotEndMin = toMinutes(slot.end24);
-                const isCurrentSlot = isCurrentWindow && currentMinutes >= slotStartMin && currentMinutes < slotEndMin;
+                const isCurrentSlot = isCurrentWindow && adjustedCurrentMinutes >= slotStartMin && adjustedCurrentMinutes < slotEndMin;
                 return (
                 <tr
                   key={`${slot.start24}-${slot.end24}`}
                   data-slot-num={slotIndex}
                   className={isCurrentSlot ? tones.rowHighlight : ""}
                 >
-                  <td className={`sticky left-0 z-10 w-60 whitespace-nowrap border-b border-r px-4 py-3 align-top text-[15px] ${tones.borderSoft} ${themeClasses.panel} ${isCurrentSlot ? `font-extrabold ${tones.textStrong}` : tones.textSubtle}`}>
+                  <td
+                    className={`sticky left-0 z-10 ${mobileTimeCol} whitespace-nowrap border-b border-r px-2 py-2 align-top ${mobileTimeText} sm:w-60 sm:px-4 sm:py-3 sm:text-[15px] ${tones.borderSoft} ${themeClasses.panel} ${isCurrentSlot ? `font-extrabold ${tones.textStrong}` : tones.textSubtle}`}
+                  >
                     {slot.label}
                   </td>
 
@@ -1892,7 +2296,7 @@ export default function Home() {
                         <td
                           key={`${dayIndex}-${slotIndex}`}
                           rowSpan={cell.span}
-                            className={`relative min-w-56 border-b border-r px-3 py-3 pb-9 align-top ${tones.borderSoft} ${
+                            className={`relative ${mobileCellMinW} border-b border-r ${mobileCellPad} pb-9 align-top sm:min-w-56 sm:px-3 sm:py-3 ${tones.borderSoft} ${
                               cell.block.done ? tones.doneBg : tones.baseSurface
                             }`}
                         >
@@ -1903,6 +2307,14 @@ export default function Home() {
                               setDraggingBlockId(null);
                               setDraggingQueueTaskId(null);
                               setDropTarget(null);
+                            }}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              setRepeatMenu({
+                                blockId: cell.block.id,
+                                x: event.clientX,
+                                y: event.clientY,
+                              });
                             }}
                             className={`flex h-full cursor-grab flex-col gap-2 rounded-md border p-2 transition-transform duration-150 active:cursor-grabbing ${
                               tones.borderSoft
@@ -1934,7 +2346,7 @@ export default function Home() {
                                   cell.block.done ? `${tones.textSubtle} line-through` : tones.textStrong
                                 }`}
                                 onDoubleClick={() => startInlineTaskEdit(cell.block)}
-                                title="drag to move, double-click to rename"
+                                title="drag to move, double-click to rename, right-click to repeat"
                               >
                                 {cell.block.task}
                               </div>
@@ -1975,7 +2387,7 @@ export default function Home() {
                     return (
                       <td
                         key={`${dayIndex}-${slotIndex}`}
-                        className={`min-w-56 border-b border-r px-2 py-2 align-top ${tones.borderSoft} ${
+                        className={`${mobileCellMinW} border-b border-r ${mobileCellPad} align-top sm:min-w-56 ${tones.borderSoft} ${
                           isCurrentSlot ? tones.cellHighlight : ""
                         } ${
                           dropTarget?.day === dayIndex && dropTarget?.slot === slotIndex ? `ring-2 ${tones.border} ${tones.softHeader}` : ""
@@ -2065,7 +2477,9 @@ export default function Home() {
                 </tr>
               );})}
               <tr className={tones.softHeader}>
-                <td className={`sticky left-0 z-10 w-60 whitespace-nowrap border-b border-r px-4 py-3 text-sm font-semibold ${tones.border} ${tones.softHeader} ${tones.textMuted}`}>
+                <td
+                  className={`sticky left-0 z-10 ${mobileTimeCol} whitespace-nowrap border-b border-r px-2 py-2 ${mobileTimeText} font-semibold sm:w-60 sm:px-4 sm:py-3 sm:text-sm ${tones.border} ${tones.softHeader} ${tones.textMuted}`}
+                >
                   end of day
                 </td>
                 {visibleDays.map((dayIndex) => (
@@ -2243,6 +2657,18 @@ export default function Home() {
                     <SelectItem key={option}>{THEME_LABELS[option]}</SelectItem>
                   ))}
                 </Select>
+                <Select
+                  label="mobile density"
+                  labelPlacement="outside"
+                  selectedKeys={new Set([mobileDensity])}
+                  onSelectionChange={(keys) => {
+                    const value = Array.from(keys)[0] as "comfy" | "dense";
+                    if (value) setMobileDensity(value);
+                  }}
+                >
+                  <SelectItem key="comfy">comfy</SelectItem>
+                  <SelectItem key="dense">dense</SelectItem>
+                </Select>
 
                 <Input type="time" label="day starts" labelPlacement="outside" value={setupStartTime} onValueChange={setSetupStartTime} />
                 <Input type="time" label="day ends" labelPlacement="outside" value={setupEndTime} onValueChange={setSetupEndTime} />
@@ -2256,6 +2682,44 @@ export default function Home() {
                 </Button>
                 <Button className={tones.accentBtn} onPress={() => applySetup(false)}>
                   save settings
+                </Button>
+              </ModalFooter>
+            </>
+          )}
+        </ModalContent>
+      </Modal>
+      <Modal isOpen={isSyncEmailOpen} onOpenChange={setIsSyncEmailOpen} placement="center">
+        <ModalContent>
+          {(onClose) => (
+            <>
+              <ModalHeader className="font-[family-name:var(--font-instrument-serif)] text-3xl">cloud sync sign in</ModalHeader>
+              <ModalBody>
+                <Input
+                  type="email"
+                  label="email"
+                  labelPlacement="outside"
+                  value={syncEmail}
+                  onValueChange={setSyncEmail}
+                  placeholder="you@example.com"
+                  autoFocus
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void submitSyncSignIn();
+                    }
+                  }}
+                />
+              </ModalBody>
+              <ModalFooter>
+                <Button variant="light" onPress={onClose}>
+                  cancel
+                </Button>
+                <Button
+                  className={tones.accentBtn}
+                  onPress={() => void submitSyncSignIn()}
+                  isDisabled={!syncEmail.trim()}
+                >
+                  send magic link
                 </Button>
               </ModalFooter>
             </>

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 260">
+  <rect width="1200" height="260" fill="#f6efe2"/>
+  <text
+    x="44"
+    y="174"
+    font-size="148"
+    font-family="Georgia, 'Times New Roman', serif"
+    letter-spacing="1.2"
+    fill="#1f1f1f"
+  >
+    minutely|
+  </text>
+</svg>

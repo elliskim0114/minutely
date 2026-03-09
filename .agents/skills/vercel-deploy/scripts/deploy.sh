@@ -211,6 +211,11 @@ elif [ -d "$INPUT_PATH" ]; then
         --exclude='node_modules' \
         --exclude='.git' \
         --exclude='.next' \
+        --exclude='dist-desktop' \
+        --exclude='build' \
+        --exclude='*.dmg' \
+        --exclude='*.zip' \
+        --exclude='*.blockmap' \
         --exclude='.agents' \
         --exclude='.claude' \
         --exclude='.codex' \

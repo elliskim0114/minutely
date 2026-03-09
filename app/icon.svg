@@ -1,3 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <text y="0.9em" font-size="90">☀️</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect x="56" y="56" width="400" height="400" rx="88" fill="#f6efe2"/>
+  <text
+    x="256"
+    y="280"
+    text-anchor="middle"
+    font-size="90"
+    font-family="Georgia, 'Times New Roman', serif"
+    letter-spacing="1"
+    fill="#1f1f1f"
+  >
+    min |
+  </text>
 </svg>
