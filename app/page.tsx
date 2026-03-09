@@ -1436,10 +1436,10 @@ export default function Home() {
   const tones = THEME_TONES[activeTheme];
   const centeredBtn = "!justify-center text-center [&>span]:w-full [&>span]:text-center";
   const denseMobile = mobileDensity === "dense";
-  const mobileTimeCol = denseMobile ? "w-[84px]" : "w-[92px]";
-  const mobileTimeText = denseMobile ? "text-[10px]" : "text-[11px]";
-  const mobileCellMinW = denseMobile ? "min-w-40" : "min-w-44";
-  const mobileCellPad = denseMobile ? "px-1.5 py-1.5" : "px-2 py-2";
+  const mobileTimeCol = denseMobile ? "w-[72px]" : "w-[80px]";
+  const mobileTimeText = denseMobile ? "text-[9px]" : "text-[10px]";
+  const mobileCellMinW = denseMobile ? "min-w-32" : "min-w-36";
+  const mobileCellPad = denseMobile ? "px-1 py-1" : "px-1.5 py-1.5";
   const setupSelectClassNames =
     activeTheme === "black"
       ? {
@@ -1861,7 +1861,7 @@ export default function Home() {
               {plannerTyped}
               <span className={`ml-0.5 inline-block ${plannerTyped.length < "minutely".length ? "animate-pulse" : ""}`}>|</span>
             </h1>
-            <div className={`text-right font-mono text-xl leading-none tabular-nums sm:mt-2 sm:text-4xl ${tones.textStrong}`}>{topClock}</div>
+            <div className={`text-right font-mono text-lg leading-none tabular-nums sm:mt-2 sm:text-4xl ${tones.textStrong}`}>{topClock}</div>
             <motion.p
               initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
@@ -2018,7 +2018,7 @@ export default function Home() {
               </Dropdown>
             </div>
 
-            <div className="hidden items-center gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:flex">
+            <div className="topbar-buttons hidden items-center gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:flex">
               <div className={`flex overflow-hidden rounded-md border ${tones.border} ${tones.baseSurface}`}>
                 <Button
                   size="md"
@@ -2210,7 +2210,7 @@ export default function Home() {
         </header>
 
         <section ref={plannerSectionRef} className={`overflow-auto rounded-xl border ${tones.border} ${themeClasses.panel}`}>
-          <table ref={plannerTableRef} className="w-full min-w-[420px] border-separate border-spacing-0 sm:min-w-[980px]">
+          <table ref={plannerTableRef} className="w-full min-w-[340px] border-separate border-spacing-0 sm:min-w-[980px]">
             <thead>
               <tr className={tones.softHeader}>
                 <th
@@ -2226,13 +2226,13 @@ export default function Home() {
                   const showPrompt = isCurrentWindow && dayIndex === now.getDay();
                   const isEditing = editingFocusDay === dayIndex || focusValue.length > 0;
                   return (
-                    <th key={dayIndex} className={`border-b border-r px-2 py-2 text-left ${tones.border} ${tones.textMuted}`}>
+                    <th key={dayIndex} className={`border-b border-r px-1.5 py-1.5 text-left sm:px-2 sm:py-2 ${tones.border} ${tones.textMuted}`}>
                       <div className="px-2 pb-2">
                         <div className="flex items-baseline gap-2">
-                          <span className={`text-base capitalize ${isToday ? `font-extrabold ${tones.textStrong}` : "font-semibold"}`}>
+                          <span className={`text-sm capitalize sm:text-base ${isToday ? `font-extrabold ${tones.textStrong}` : "font-semibold"}`}>
                             {DAY_NAMES[dayIndex]}
                           </span>
-                          <span className={`text-sm ${isToday ? `font-semibold ${tones.textStrong}` : tones.textSubtle}`}>{formatDayDate(date)}</span>
+                          <span className={`text-xs sm:text-sm ${isToday ? `font-semibold ${tones.textStrong}` : tones.textSubtle}`}>{formatDayDate(date)}</span>
                         </div>
                       </div>
                       {isEditing ? (
@@ -2251,15 +2251,15 @@ export default function Home() {
                           }}
                           placeholder="what matters most today?"
                           classNames={{
-                            inputWrapper: `h-10 rounded-md ${tones.baseSurface}`,
-                            input: `text-sm ${activeTheme === "black" ? "!text-zinc-100" : ""}`,
+                            inputWrapper: `h-8 rounded-md sm:h-10 ${tones.baseSurface}`,
+                            input: `text-xs sm:text-sm ${activeTheme === "black" ? "!text-zinc-100" : ""}`,
                           }}
                         />
                       ) : (
                         <Button
                           variant="bordered"
                           radius="sm"
-                          className={`h-10 w-full text-sm font-medium ${tones.border} ${tones.baseSurface} ${focusPromptTextClass}`}
+                          className={`h-8 w-full text-xs font-medium sm:h-10 sm:text-sm ${tones.border} ${tones.baseSurface} ${focusPromptTextClass}`}
                           onPress={() => setEditingFocusDay(dayIndex)}
                         >
                           {showPrompt ? "what matters most today?" : ""}
@@ -2327,7 +2327,7 @@ export default function Home() {
                                 value={inlineEditingTaskName}
                                 onValueChange={setInlineEditingTaskName}
                                 autoFocus
-                                classNames={{ inputWrapper: "h-9", input: "text-sm sm:text-base" }}
+                                classNames={{ inputWrapper: "h-8 sm:h-9", input: "text-xs sm:text-base" }}
                                 onBlur={saveInlineTaskEdit}
                                 onKeyDown={(event) => {
                                   if (event.key === "Enter") {
@@ -2342,7 +2342,7 @@ export default function Home() {
                               />
                             ) : (
                               <div
-                                className={`w-full text-left text-base leading-tight transition sm:text-lg ${
+                                className={`w-full text-left text-sm leading-tight transition sm:text-lg ${
                                   cell.block.done ? `${tones.textSubtle} line-through` : tones.textStrong
                                 }`}
                                 onDoubleClick={() => startInlineTaskEdit(cell.block)}
@@ -2726,6 +2726,22 @@ export default function Home() {
           )}
         </ModalContent>
       </Modal>
+      <style jsx global>{`
+        .topbar-buttons button {
+          justify-content: center !important;
+          text-align: center !important;
+          align-items: center !important;
+        }
+        .topbar-buttons button [data-slot='content'],
+        .topbar-buttons button span {
+          display: flex !important;
+          width: 100% !important;
+          justify-content: center !important;
+          align-items: center !important;
+          text-align: center !important;
+          line-height: 1 !important;
+        }
+      `}</style>
 
     </main>
   );
