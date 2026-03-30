@@ -1,70 +1,23 @@
 {
-  "name": "make-something",
+  "name": "minutely-server",
   "version": "0.1.0",
   "private": true,
-  "main": "electron/main.cjs",
-  "engines": {
-    "node": ">=20"
-  },
   "type": "module",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint app/",
-    "desktop:dev": "MINUTELY_WEB_URL=http://localhost:3000 electron .",
-    "desktop:prod": "electron .",
-    "desktop:dist": "electron-builder --mac zip --publish never",
-    "release:mac": "bash scripts/release-mac.sh"
-  },
-  "build": {
-    "appId": "com.minutely.app",
-    "productName": "Minutely",
-    "afterSign": "electron/notarize.cjs",
-    "directories": {
-      "buildResources": "build",
-      "output": "dist-desktop"
-    },
-    "files": [
-      "electron/**/*",
-      "package.json"
-    ],
-    "mac": {
-      "target": [
-        "zip"
-      ],
-      "icon": "build/icon.icns",
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false,
-      "category": "public.app-category.productivity",
-      "artifactName": "Minutely-${version}.${ext}"
-    }
+    "dev": "node --env-file=.env --watch --loader ts-node/esm index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
   },
   "dependencies": {
-    "@heroui/react": "^2.8.9",
-    "@supabase/supabase-js": "^2.98.0",
-    "canvas-confetti": "^1.9.4",
-    "framer-motion": "^12.34.3",
-    "html-to-image": "^1.11.13",
-    "html2canvas": "^1.4.1",
-    "jspdf": "^4.2.0",
-    "next": "16.1.6",
-    "react": "19.2.3",
-    "react-dom": "19.2.3",
-    "react-icons": "^5.6.0"
+    "@anthropic-ai/sdk": "^0.32.1",
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
   },
   "devDependencies": {
-    "@electron/notarize": "^3.1.1",
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "electron": "^40.8.0",
-    "electron-builder": "^26.8.1",
-    "eslint": "^9",
-    "eslint-config-next": "16.1.6",
-    "icon-gen": "^5.0.0",
-    "tailwindcss": "^4",
-    "typescript": "^5"
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.3"
   }
 }
